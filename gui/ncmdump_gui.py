@@ -187,7 +187,7 @@ class ConvertThread(threading.Thread):
                   saved.artist, saved.album, saved.title,
                   "yes" if saved.cover_data else "no")
 
-        # ffmpeg: pure audio conversion, no metadata
+        # ffmpeg: pure audio conversion
         # Use temp output to avoid input==output when source is already MP3
         tmp_out = os.path.join(self.output_dir, item.path.stem + ".tmp.mp3")
         final_out = os.path.join(self.output_dir, item.path.stem + ".mp3")
@@ -204,19 +204,26 @@ class ConvertThread(threading.Thread):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             log.error("[ffmpeg] FAILED: %s", r.stderr.strip()[-200:])
+            # Clean up partial/temp files on failure
+            for f in (tmp_out,):
+                if os.path.isfile(f):
+                    os.remove(f)
             self._update(self.items.index(item), "失败")
             return
 
-        # Replace with temp output
+        # Atomically replace with temp output
         os.replace(tmp_out, final_out)
 
         # Write metadata back to final MP3
         write_meta_from_snapshot(final_out, saved)
 
-        # Remove original decrypted file (MP3 mode keeps only the converted file)
-        if os.path.isfile(decrypted) and not os.path.samefile(decrypted, final_out):
-            os.remove(decrypted)
-            log.debug("[cleanup] removed %s", os.path.basename(decrypted))
+        # Remove original decrypted file if different from final (e.g. .flac -> .mp3)
+        try:
+            if os.path.isfile(decrypted) and not os.path.samefile(decrypted, final_out):
+                os.remove(decrypted)
+                log.debug("[cleanup] removed %s", os.path.basename(decrypted))
+        except OSError as e:
+            log.warning("[cleanup] could not remove %s: %s", decrypted, e)
 
         self._update(self.items.index(item), "完成")
 
