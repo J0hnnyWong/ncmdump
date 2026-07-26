@@ -199,14 +199,21 @@ class SavedMeta:
         self.cover_mime = "image/jpeg"
 
 
+def _first(v):
+    """Extract the first string value from a mutagen easy-API return (list or str)."""
+    if isinstance(v, list):
+        return str(v[0]) if v else ""
+    return str(v) if v else ""
+
+
 def read_meta_from_file(audio_path: str) -> SavedMeta:
     m = SavedMeta()
     try:
         audio = MutagenFile(audio_path)
         if audio is not None:
-            m.artist = str(audio.get("artist", ""))
-            m.album = str(audio.get("album", ""))
-            m.title = str(audio.get("title", ""))
+            m.artist = _first(audio.get("artist", ""))
+            m.album = _first(audio.get("album", ""))
+            m.title = _first(audio.get("title", ""))
     except Exception:
         log.debug("[tag] read via File failed:\n%s", traceback.format_exc())
 
