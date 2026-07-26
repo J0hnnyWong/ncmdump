@@ -120,6 +120,14 @@ class ConvertThread(threading.Thread):
             self._update(index, "完成")
 
     def _decrypt(self, item: FileItem, src: str) -> str | None:
+        # Clean up any previous output for this stem before decrypting
+        base_stem = os.path.join(self.output_dir, item.path.stem)
+        for ext in (".mp3", ".flac", ".tmp.mp3"):
+            p = base_stem + ext
+            if os.path.isfile(p):
+                os.remove(p)
+                log.debug("[cleanup] removed previous %s", os.path.basename(p))
+
         log.info("[decrypt] %s", item.name)
         log.debug("[decrypt] ncmdump \"%s\" -o \"%s\"", src, self.output_dir)
         r = subprocess.run(
