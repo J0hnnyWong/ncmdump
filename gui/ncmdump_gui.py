@@ -213,8 +213,8 @@ class ConvertThread(threading.Thread):
         # Write metadata back to final MP3
         write_meta_from_snapshot(final_out, saved)
 
-        # Remove intermediate decrypted file if different
-        if os.path.isfile(decrypted) and os.path.realpath(decrypted) != os.path.realpath(final_out):
+        # Remove original decrypted file (MP3 mode keeps only the converted file)
+        if os.path.isfile(decrypted) and not os.path.samefile(decrypted, final_out):
             os.remove(decrypted)
             log.debug("[cleanup] removed %s", os.path.basename(decrypted))
 
@@ -282,23 +282,38 @@ class NcmDumpFrame(wx.Frame):
 
         # Advanced options
         adv_box = wx.StaticBox(panel, label="高级选项")
-        adv_sizer = wx.StaticBoxSizer(adv_box, wx.HORIZONTAL)
+        adv_outer = wx.BoxSizer(wx.VERTICAL)
 
+        # Row 1: checkboxes
+        row1 = wx.BoxSizer(wx.HORIZONTAL)
         self.cb_mp3 = wx.CheckBox(panel, label="转换为 MP3 (iPod 兼容, 320kbps)")
         self.cb_mp3.SetValue(self.settings.get("mp3_convert", False))
         self.cb_fill = wx.CheckBox(panel, label="从目录结构填充元数据")
         self.cb_fill.SetValue(self.settings.get("fill_metadata", False))
+        btn_info = wx.Button(panel, label="?", size=(28, 24), style=wx.BU_EXACTFIT)
+        btn_info.SetToolTip("元数据填充规则:\n"
+                           "• 目录结构: 歌手/专辑/歌曲.ncm → 自动提取歌手和专辑\n"
+                           "• 专辑封面: 从音乐根目录/meta/track-{id}.jpg 匹配\n"
+                           "• 缺失时: 使用 ncm 文件内嵌的元数据作为补充")
 
-        adv_sizer.Add(self.cb_mp3, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 6)
-        adv_sizer.Add(self.cb_fill, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 6)
-        adv_sizer.AddStretchSpacer()
+        row1.Add(self.cb_mp3, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 4)
+        row1.Add(self.cb_fill, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 4)
+        row1.Add(btn_info, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 4)
+        row1.AddStretchSpacer()
 
+        # Row 2: music root
+        row2 = wx.BoxSizer(wx.HORIZONTAL)
         self.lbl_mroot = wx.StaticText(panel, label="音乐根目录: (自动检测)")
         btn_mroot = wx.Button(panel, label="设置根目录", size=(100, -1))
-        adv_sizer.Add(self.lbl_mroot, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 6)
-        adv_sizer.Add(btn_mroot, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 6)
+        row2.Add(self.lbl_mroot, 1, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 4)
+        row2.Add(btn_mroot, 0, wx.ALL | wx.ALIGN_CENTRE_VERTICAL, 4)
 
-        sizer.Add(adv_sizer, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+        adv_outer.Add(row1, 0, wx.EXPAND | wx.ALL, 4)
+        adv_outer.Add(row2, 0, wx.EXPAND | wx.ALL, 4)
+        adv_box_sizer = wx.StaticBoxSizer(adv_box, wx.VERTICAL)
+        adv_box_sizer.Add(adv_outer, 0, wx.EXPAND)
+
+        sizer.Add(adv_box_sizer, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
 
         # Progress
         self.gauge = wx.Gauge(panel, range=100)
