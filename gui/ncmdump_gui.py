@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import threading
+import threading, traceback
 from pathlib import Path
 
 import wx
@@ -89,7 +89,7 @@ class ConvertThread(threading.Thread):
             try:
                 self._process_one(item, i)
             except Exception as e:
-                log.error("[convert] %s: %s", item.name, e)
+                log.error("[convert] %s: %s\n%s", item.name, e, traceback.format_exc())
                 self._update(i, "错误")
         self._update(-1, "")
 

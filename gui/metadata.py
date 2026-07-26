@@ -6,12 +6,13 @@ import base64
 import json
 import os
 import struct
+import traceback
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from mutagen.flac import FLAC, Picture as FlacPicture
+from mutagen import File as MutagenFile
+from mutagen.flac import Picture as FlacPicture
 from mutagen.id3 import ID3, APIC, TALB, TIT2, TPE1, TPE2
-from mutagen.mp3 import MP3
 
 from logger import log
 
@@ -31,12 +32,10 @@ def _rstrip_nul(data: bytes) -> bytes:
     return data.rstrip(b"\x00")
 
 
-# ── JSON helper ───────────────────────────────────────────────
+# ── JSON ──────────────────────────────────────────────────────
 
 def _parse_json_lenient(raw: bytes) -> dict | None:
-    """Parse JSON, handling trailing garbage after the root object."""
     s = raw.decode("utf-8", errors="replace")
-    # Find balanced root object
     depth = 0
     end = 0
     for i, ch in enumerate(s):
@@ -55,19 +54,16 @@ def _parse_json_lenient(raw: bytes) -> dict | None:
         return None
 
 
-# ── NCM header parsing ────────────────────────────────────────
+# ── NCM header ────────────────────────────────────────────────
 
 def extract_ncm_meta(filepath: str | Path) -> dict | None:
-    """Read .ncm header and return the embedded JSON metadata dict."""
     try:
         with open(filepath, "rb") as f:
             h1 = struct.unpack("<I", f.read(4))[0]
             h2 = struct.unpack("<I", f.read(4))[0]
             if h1 != 0x4E455443 or h2 != 0x4D414446:
                 return None
-
             f.seek(2, 1)
-
             key_len = struct.unpack("<I", f.read(4))[0]
             if key_len <= 0:
                 return None
@@ -75,7 +71,6 @@ def extract_ncm_meta(filepath: str | Path) -> dict | None:
             for i in range(len(keydata)):
                 keydata[i] ^= 0x64
             _keydata = _rstrip_nul(_aes_ecb_decrypt(bytes(keydata), _CORE_KEY))
-
             meta_len = struct.unpack("<I", f.read(4))[0]
             if meta_len <= 0:
                 return None
@@ -85,18 +80,16 @@ def extract_ncm_meta(filepath: str | Path) -> dict | None:
             modify = modify[22:]
             decoded = base64.b64decode(bytes(modify))
             decrypted = _rstrip_nul(_aes_ecb_decrypt(decoded, _MODIFY_KEY))
-            decrypted = decrypted[6:]  # skip "music:"
-
+            decrypted = decrypted[6:]
             return _parse_json_lenient(decrypted)
-    except Exception as e:
-        log.warning("[metadata] parse failed %s: %s", filepath, e)
+    except Exception:
+        log.debug("[metadata] parse exception:\n%s", traceback.format_exc())
         return None
 
 
-# ── Path-derived metadata ─────────────────────────────────────
+# ── Path metadata ─────────────────────────────────────────────
 
 def parse_path_meta(filepath: str | Path) -> tuple[str, str, str]:
-    """Derive (artist, album, title) from  root/Artist/Album/Song.ncm."""
     p = Path(filepath)
     artist = p.parent.parent.name if p.parent.parent else ""
     album = p.parent.name
@@ -122,10 +115,52 @@ def _cover_mime(cover_path: str) -> str:
     return "image/png" if cover_path.lower().endswith(".png") else "image/jpeg"
 
 
-def _ensure_id3(mp3: MP3) -> ID3:
-    if mp3.tags is None:
-        mp3.add_tags()
-    return mp3.tags
+def _read_cover_data(cover_path: str) -> bytes:
+    with open(cover_path, "rb") as f:
+        return f.read()
+
+
+def _write_id3_tags(filepath: str, artist: str, album: str, title: str,
+                    cover_path: str | None) -> None:
+    """Write ID3v2.3 tags to an MP3 file."""
+    id3 = ID3()
+    if artist:
+        id3.add(TPE1(encoding=3, text=artist))
+        id3.add(TPE2(encoding=3, text=artist))
+    if album:
+        id3.add(TALB(encoding=3, text=album))
+    if title:
+        id3.add(TIT2(encoding=3, text=title))
+    if cover_path:
+        id3.add(APIC(encoding=3, mime=_cover_mime(cover_path),
+                     type=3, desc="Cover", data=_read_cover_data(cover_path)))
+    id3.save(filepath, v2_version=3)
+
+
+def _write_flac_tags(filepath: str, artist: str, album: str, title: str,
+                     cover_path: str | None) -> None:
+    """Write Vorbis comments + cover to a FLAC file."""
+    audio = MutagenFile(filepath)
+    if audio is None:
+        return
+    if artist:
+        audio["artist"] = artist
+        audio["albumartist"] = artist
+    if album:
+        audio["album"] = album
+    if title:
+        audio["title"] = title
+    audio.save()
+    if cover_path:
+        audio = MutagenFile(filepath)
+        audio.clear_pictures()
+        pic = FlacPicture()
+        pic.type = 3
+        pic.mime = _cover_mime(cover_path)
+        pic.desc = "Cover"
+        pic.data = _read_cover_data(cover_path)
+        audio.add_picture(pic)
+        audio.save()
 
 
 def write_tags(
@@ -135,54 +170,25 @@ def write_tags(
     title: str = "",
     cover_path: str | None = None,
 ) -> None:
-    """Write tags and optionally embed cover art."""
     if not any((artist, album, title)) and not cover_path:
         return
-
     ext = os.path.splitext(audio_path)[1].lower()
     log.debug("[tag] writing to %s", os.path.basename(audio_path))
+    try:
+        if ext == ".mp3":
+            _write_id3_tags(audio_path, artist, album, title, cover_path)
+        elif ext == ".flac":
+            _write_flac_tags(audio_path, artist, album, title, cover_path)
+        else:
+            log.warning("[tag] unsupported format: %s", audio_path)
+            return
+        log.info("[tag] wrote to %s", os.path.basename(audio_path))
+    except Exception:
+        log.error("[tag] write failed for %s:\n%s", audio_path, traceback.format_exc())
+        raise
 
-    if ext == ".mp3":
-        audio = MP3(audio_path)
-        tags = _ensure_id3(audio)
-        if artist:
-            tags.add(TPE1(encoding=3, text=artist))
-            tags.add(TPE2(encoding=3, text=artist))
-        if album:
-            tags.add(TALB(encoding=3, text=album))
-        if title:
-            tags.add(TIT2(encoding=3, text=title))
-        if cover_path:
-            tags.delall("APIC")
-            with open(cover_path, "rb") as f:
-                tags.add(APIC(encoding=3, mime=_cover_mime(cover_path),
-                              type=3, desc="Cover", data=f.read()))
-        tags.save(v2_version=3)
-    elif ext == ".flac":
-        audio = FLAC(audio_path)
-        if artist:
-            audio["artist"] = artist
-            audio["albumartist"] = artist
-        if album:
-            audio["album"] = album
-        if title:
-            audio["title"] = title
-        if cover_path:
-            audio.clear_pictures()
-            pic = FlacPicture()
-            pic.type = 3
-            pic.mime = _cover_mime(cover_path)
-            pic.desc = "Cover"
-            with open(cover_path, "rb") as f:
-                pic.data = f.read()
-            audio.add_picture(pic)
-        audio.save()
-    else:
-        log.warning("[tag] unsupported format: %s", audio_path)
-        return
 
-    log.info("[tag] wrote to %s", os.path.basename(audio_path))
-
+# ── Metadata snapshot for convert-then-restore ────────────────
 
 class SavedMeta:
     def __init__(self) -> None:
@@ -194,71 +200,86 @@ class SavedMeta:
 
 
 def read_meta_from_file(audio_path: str) -> SavedMeta:
-    """Read all tags and cover art into a portable snapshot."""
     m = SavedMeta()
+    try:
+        audio = MutagenFile(audio_path)
+        if audio is not None:
+            m.artist = str(audio.get("artist", ""))
+            m.album = str(audio.get("album", ""))
+            m.title = str(audio.get("title", ""))
+    except Exception:
+        log.debug("[tag] read via File failed:\n%s", traceback.format_exc())
+
+    # Extract cover via format-specific API
     ext = os.path.splitext(audio_path)[1].lower()
     try:
         if ext == ".mp3":
-            tags = ID3(audio_path)
-            m.artist = str(tags.get("TPE1", ""))
-            m.album = str(tags.get("TALB", ""))
-            m.title = str(tags.get("TIT2", ""))
-            apic = tags.getall("APIC")
+            id3 = ID3(audio_path)
+            apic = id3.getall("APIC")
             if apic:
                 m.cover_data = apic[0].data
                 m.cover_mime = apic[0].mime
         elif ext == ".flac":
-            audio = FLAC(audio_path)
-            m.artist = str(audio.get("artist", ""))
-            m.album = str(audio.get("album", ""))
-            m.title = str(audio.get("title", ""))
-            pics = audio.pictures
-            if pics:
-                m.cover_data = pics[0].data
-                m.cover_mime = pics[0].mime
-    except Exception as e:
-        log.warning("[tag] read failed %s: %s", audio_path, e)
+            audio = MutagenFile(audio_path)
+            if audio and hasattr(audio, "pictures") and audio.pictures:
+                m.cover_data = audio.pictures[0].data
+                m.cover_mime = audio.pictures[0].mime
+    except Exception:
+        log.debug("[tag] cover read failed:\n%s", traceback.format_exc())
+
     return m
 
 
 def write_meta_from_snapshot(audio_path: str, meta: SavedMeta) -> None:
-    """Apply a SavedMeta snapshot to an audio file."""
     ext = os.path.splitext(audio_path)[1].lower()
-    if ext == ".mp3":
-        audio = MP3(audio_path)
-        tags = _ensure_id3(audio)
-        if meta.artist:
-            tags.add(TPE1(encoding=3, text=meta.artist))
-            tags.add(TPE2(encoding=3, text=meta.artist))
-        if meta.album:
-            tags.add(TALB(encoding=3, text=meta.album))
-        if meta.title:
-            tags.add(TIT2(encoding=3, text=meta.title))
-        if meta.cover_data:
-            tags.delall("APIC")
-            tags.add(APIC(encoding=3, mime=meta.cover_mime,
-                          type=3, desc="Cover", data=meta.cover_data))
-        tags.save(v2_version=3)
-    elif ext == ".flac":
-        audio = FLAC(audio_path)
-        if meta.artist:
-            audio["artist"] = meta.artist
-            audio["albumartist"] = meta.artist
-        if meta.album:
-            audio["album"] = meta.album
-        if meta.title:
-            audio["title"] = meta.title
-        if meta.cover_data:
-            audio.clear_pictures()
-            pic = FlacPicture()
-            pic.type = 3
-            pic.mime = meta.cover_mime
-            pic.desc = "Cover"
-            pic.data = meta.cover_data
-            audio.add_picture(pic)
-        audio.save()
-    else:
-        log.warning("[tag] unsupported: %s", audio_path)
-        return
+    try:
+        if ext == ".mp3":
+            _apply_snapshot_mp3(audio_path, meta)
+        elif ext == ".flac":
+            _apply_snapshot_flac(audio_path, meta)
+        else:
+            log.warning("[tag] unsupported: %s", audio_path)
+            return
+        log.info("[tag] restored to %s", os.path.basename(audio_path))
+    except Exception:
+        log.error("[tag] restore failed for %s:\n%s", audio_path, traceback.format_exc())
+        raise
 
-    log.info("[tag] restored to %s", os.path.basename(audio_path))
+
+def _apply_snapshot_mp3(filepath: str, meta: SavedMeta) -> None:
+    id3 = ID3()
+    if meta.artist:
+        id3.add(TPE1(encoding=3, text=meta.artist))
+        id3.add(TPE2(encoding=3, text=meta.artist))
+    if meta.album:
+        id3.add(TALB(encoding=3, text=meta.album))
+    if meta.title:
+        id3.add(TIT2(encoding=3, text=meta.title))
+    if meta.cover_data:
+        id3.add(APIC(encoding=3, mime=meta.cover_mime, type=3,
+                     desc="Cover", data=meta.cover_data))
+    id3.save(filepath, v2_version=3)
+
+
+def _apply_snapshot_flac(filepath: str, meta: SavedMeta) -> None:
+    audio = MutagenFile(filepath)
+    if audio is None:
+        return
+    if meta.artist:
+        audio["artist"] = meta.artist
+        audio["albumartist"] = meta.artist
+    if meta.album:
+        audio["album"] = meta.album
+    if meta.title:
+        audio["title"] = meta.title
+    audio.save()
+    if meta.cover_data:
+        audio = MutagenFile(filepath)
+        audio.clear_pictures()
+        pic = FlacPicture()
+        pic.type = 3
+        pic.mime = meta.cover_mime
+        pic.desc = "Cover"
+        pic.data = meta.cover_data
+        audio.add_picture(pic)
+        audio.save()
