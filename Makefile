@@ -1,13 +1,22 @@
-.PHONY: setup build run gui clean
+.PHONY: setup build run clean
+
+VENV := .venv
+PYTHON := $(VENV)/bin/python3
+BREW := /opt/homebrew/bin/brew
 
 BUILD_DIR := build
 CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release
-NPROC := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc)
+NPROC := $(shell sysctl -n hw.ncpu)
 
 setup:
-	@echo "Installing dependencies..."
-	brew install cmake taglib
-	@echo "Done."
+	@echo "=== Installing system dependencies ==="
+	$(BREW) install cmake taglib python
+	@echo ""
+	@echo "=== Creating Python virtual environment ==="
+	/opt/homebrew/bin/python3 -m venv $(VENV) --clear --upgrade-deps
+	@echo ""
+	@echo "=== Setup complete ==="
+	@echo "Run 'make run' to start the GUI."
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -15,13 +24,9 @@ build:
 	@echo "Build complete: $(BUILD_DIR)/ncmdump"
 
 run: build
-	@echo "Running ncmdump..."
-	./$(BUILD_DIR)/ncmdump $(ARGS)
-
-gui:
-	@echo "Starting GUI..."
-	python3 gui/ncmdump_gui.py
+	@echo "Starting NCM Dump..."
+	$(PYTHON) gui/ncmdump_gui.py
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(VENV)
 	@echo "Cleaned."

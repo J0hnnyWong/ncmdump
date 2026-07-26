@@ -8,4 +8,4 @@ build
 
 cmake-build-*
 
-vcpkg_installed
+vcpkg_installed.venv/
