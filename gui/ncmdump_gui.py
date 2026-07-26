@@ -188,14 +188,16 @@ class ConvertThread(threading.Thread):
                   "yes" if saved.cover_data else "no")
 
         # ffmpeg: pure audio conversion, no metadata
-        mp3_out = os.path.join(self.output_dir, item.path.stem + ".mp3")
+        # Use temp output to avoid input==output when source is already MP3
+        tmp_out = os.path.join(self.output_dir, item.path.stem + ".tmp.mp3")
+        final_out = os.path.join(self.output_dir, item.path.stem + ".mp3")
         cmd = [
             "ffmpeg", "-y",
             "-i", decrypted,
             "-map", "0:a",
             "-c:a", "libmp3lame", "-b:a", "320k",
             "-id3v2_version", "3",
-            mp3_out,
+            tmp_out,
         ]
         log.info("[ffmpeg] %s -> mp3", item.name)
         log.debug("[ffmpeg] %s", " ".join(cmd))
@@ -205,11 +207,14 @@ class ConvertThread(threading.Thread):
             self._update(self.items.index(item), "失败")
             return
 
-        # Write metadata back to new MP3
-        write_meta_from_snapshot(mp3_out, saved)
+        # Replace with temp output
+        os.replace(tmp_out, final_out)
 
-        # Remove intermediate decrypted file
-        if os.path.isfile(decrypted) and decrypted != mp3_out:
+        # Write metadata back to final MP3
+        write_meta_from_snapshot(final_out, saved)
+
+        # Remove intermediate decrypted file if different
+        if os.path.isfile(decrypted) and os.path.realpath(decrypted) != os.path.realpath(final_out):
             os.remove(decrypted)
             log.debug("[cleanup] removed %s", os.path.basename(decrypted))
 
