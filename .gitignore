@@ -8,4 +8,9 @@ build
 
 cmake-build-*
 
-vcpkg_installed.venv/
+vcpkg_installed
+.venv/
+gui/__pycache__/
+gui/ncmdump.log
+gui/ncmdump.log.*
+gui/settings.json
