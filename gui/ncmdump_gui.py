@@ -236,12 +236,22 @@ class NcmDumpFrame(wx.Frame):
 
         self.settings = load_settings()
 
+        self._setup_menubar()
         self._setup_ui()
         self._setup_statusbar()
         self.Centre()
         self.Show()
 
     # ── UI ────────────────────────────────────────────────────
+
+
+    def _setup_menubar(self) -> None:
+        mb = wx.MenuBar()
+        file_menu = wx.Menu()
+        quit_item = file_menu.Append(wx.ID_EXIT, "退出\tCtrl+Q")
+        mb.Append(file_menu, "文件")
+        self.SetMenuBar(mb)
+        self.Bind(wx.EVT_MENU, self._on_quit, quit_item)
 
     def _setup_ui(self) -> None:
         panel = wx.Panel(self)
@@ -420,10 +430,13 @@ class NcmDumpFrame(wx.Frame):
         self.dvlc.SetValue(status, index, 2)
         self.gauge.SetValue(index + 1)
 
-    def _on_close(self, _e) -> None:
+    def _on_quit(self, _e) -> None:
         if self.convert_thread and self.convert_thread.is_alive():
             self.convert_thread.cancel()
         self.Destroy()
+
+    def _on_close(self, _e) -> None:
+        self._on_quit(_e)
 
 
 def main() -> None:
