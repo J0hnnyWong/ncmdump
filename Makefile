@@ -10,11 +10,11 @@ NPROC := $(shell sysctl -n hw.ncpu)
 
 setup:
 	@echo "=== Installing system dependencies ==="
-	$(BREW) install cmake taglib python
+	$(BREW) install cmake taglib python ffmpeg
 	@echo ""
 	@echo "=== Creating Python virtual environment ==="
 	python3 -m venv $(VENV) --clear --upgrade-deps
-	$(PYTHON) -m pip install wxpython
+	$(PYTHON) -m pip install wxpython cryptography
 	@echo ""
 	@echo "=== Setup complete ==="
 	@echo "Run 'make run' to start the GUI."
