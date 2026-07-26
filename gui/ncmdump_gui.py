@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -41,6 +42,52 @@ def _find_ncmdump() -> str:
 
 NCMDUMP = _find_ncmdump()
 
+# ── Native folder picker ──────────────────────────────────────
+
+def _pick_folder_native(title: str = "Select folder") -> str | None:
+    """Open a native OS folder picker and return the chosen path."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            script = f'tell app "System Events" to POSIX path of (choose folder with prompt "{title}")'
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=120,
+            )
+            path = result.stdout.strip()
+            return path if path else None
+
+        elif system == "Windows":
+            ps_script = f'''
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.FolderBrowserDialog
+$f.Description = "{title}"
+$f.ShowNewFolderButton = $true
+if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $f.SelectedPath }}
+'''
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, text=True, timeout=120,
+            )
+            path = result.stdout.strip()
+            return path if path else None
+
+        else:  # Linux
+            for cmd in ["zenity", "kdialog"]:
+                try:
+                    result = subprocess.run(
+                        [cmd, "--file-selection", "--directory", f"--title={title}"],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    path = result.stdout.strip()
+                    if path:
+                        return path
+                except FileNotFoundError:
+                    continue
+            return None
+    except Exception:
+        return None
+
 # ── Conversion worker ─────────────────────────────────────────
 
 def _run_conversion(input_dir: str, output_dir: str) -> None:
@@ -75,7 +122,7 @@ def _run_conversion(input_dir: str, output_dir: str) -> None:
     with _lock:
         _state["converting"] = False
 
-# ── HTTP handler ──────────────────────────────────────────────
+# ── HTML ──────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -125,16 +172,16 @@ HTML = r"""<!DOCTYPE html>
   <span id="progress-text"></span>
 </div>
 <div class="path-row">
-  <span>输入:</span><input id="inputDir" type="text" placeholder="输入目录路径（包含 .ncm 文件）" readonly>
+  <span>输入:</span><input id="inputDir" type="text" placeholder="点击上方按钮选择输入目录" readonly>
 </div>
 <div class="path-row">
-  <span>输出:</span><input id="outputDir" type="text" placeholder="输出目录路径" readonly>
+  <span>输出:</span><input id="outputDir" type="text" placeholder="点击上方按钮选择输出目录" readonly>
 </div>
 <div class="progress-bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
 <div style="flex:1; overflow:auto;">
   <table>
     <thead><tr><th>文件名</th><th>所在目录</th><th style="width:100px">状态</th></tr></thead>
-    <tbody id="tbody"><tr><td colspan="3" class="empty">请选择输入目录以扫描 .ncm 文件</td></tr></tbody>
+    <tbody id="tbody"><tr><td colspan="3" class="empty">请点击"选择输入目录"扫描 .ncm 文件</td></tr></tbody>
   </table>
 </div>
 <div class="footer" id="statusBar">就绪</div>
@@ -143,16 +190,18 @@ HTML = r"""<!DOCTYPE html>
   let pollingTimer = null;
 
   async function pickInput() {
-    const path = prompt("请输入包含 .ncm 文件的目录路径:");
-    if (!path) return;
-    $('inputDir').value = path;
-    await scan(path);
+    const resp = await fetch('/api/pick-folder');
+    const data = await resp.json();
+    if (!data.path) { $('statusBar').textContent = '已取消选择'; return; }
+    $('inputDir').value = data.path;
+    await scan(data.path);
   }
 
   async function pickOutput() {
-    const path = prompt("请输入输出目录路径:");
-    if (!path) return;
-    $('outputDir').value = path;
+    const resp = await fetch('/api/pick-folder');
+    const data = await resp.json();
+    if (!data.path) { $('statusBar').textContent = '已取消选择'; return; }
+    $('outputDir').value = data.path;
     checkReady();
   }
 
@@ -164,7 +213,7 @@ HTML = r"""<!DOCTYPE html>
     });
     const data = await resp.json();
     renderFiles(data.files);
-    $('statusBar').textContent = `扫描完成，找到 ${data.files.length} 个 .ncm 文件`;
+    $('statusBar').textContent = '扫描完成，找到 ' + data.files.length + ' 个 .ncm 文件';
     checkReady();
   }
 
@@ -175,7 +224,7 @@ HTML = r"""<!DOCTYPE html>
       return;
     }
     tbody.innerHTML = files.map(f =>
-      `<tr data-name="${f.name}"><td>${esc(f.name)}</td><td>${esc(f.dir)}</td><td class="status">等待转换</td></tr>`
+      '<tr data-name="' + escAttr(f.name) + '"><td>' + esc(f.name) + '</td><td>' + esc(f.dir) + '</td><td class="status">等待转换</td></tr>'
     ).join('');
   }
 
@@ -185,12 +234,15 @@ HTML = r"""<!DOCTYPE html>
     return el.innerHTML;
   }
 
+  function escAttr(s) {
+    return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
   async function startConvert() {
     const inputDir = $('inputDir').value;
     const outputDir = $('outputDir').value;
     if (!inputDir || !outputDir) return;
 
-    // Reset all statuses
     document.querySelectorAll('td.status').forEach(td => td.textContent = '等待转换');
     $('btnGo').disabled = true;
     $('statusBar').textContent = '转换中...';
@@ -204,7 +256,7 @@ HTML = r"""<!DOCTYPE html>
   }
 
   function clearList() {
-    $('tbody').innerHTML = '<tr><td colspan="3" class="empty">请选择输入目录以扫描 .ncm 文件</td></tr>';
+    $('tbody').innerHTML = '<tr><td colspan="3" class="empty">请点击"选择输入目录"扫描 .ncm 文件</td></tr>';
     $('progressFill').style.width = '0%';
     $('progressText').textContent = '';
     $('statusBar').textContent = '就绪';
@@ -213,7 +265,7 @@ HTML = r"""<!DOCTYPE html>
   }
 
   function checkReady() {
-    $('btnGo').disabled = !($('inputDir').value && $('outputDir').value && $('tbody').rows.length > 0);
+    $('btnGo').disabled = !($('inputDir').value && $('outputDir').value && document.querySelectorAll('#tbody td.status').length > 0);
   }
 
   function startPolling() {
@@ -229,7 +281,7 @@ HTML = r"""<!DOCTYPE html>
     const resp = await fetch('/api/status');
     const data = await resp.json();
     for (const [name, status] of Object.entries(data.statuses)) {
-      const row = document.querySelector(`tr[data-name="${CSS.escape(name)}"]`);
+      const row = document.querySelector('tr[data-name="' + CSS.escape(name) + '"]');
       if (!row) continue;
       const td = row.querySelector('td.status');
       td.textContent = status;
@@ -241,7 +293,7 @@ HTML = r"""<!DOCTYPE html>
     if (data.total > 0) {
       const pct = Math.round(data.progress / data.total * 100);
       $('progressFill').style.width = pct + '%';
-      $('progressText').textContent = `${data.progress}/${data.total}`;
+      $('progressText').textContent = data.progress + '/' + data.total;
     }
     if (!data.converting) {
       stopPolling();
@@ -252,6 +304,8 @@ HTML = r"""<!DOCTYPE html>
 </script>
 </body>
 </html>"""
+
+# ── HTTP handler ──────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -279,6 +333,9 @@ class Handler(BaseHTTPRequestHandler):
                     "total": _state["total"],
                     "statuses": dict(_state["statuses"]),
                 })
+        elif path == "/api/pick-folder":
+            path_result = _pick_folder_native()
+            self._send(200, {"path": path_result})
         else:
             self._send(404, {"error": "not found"})
 
