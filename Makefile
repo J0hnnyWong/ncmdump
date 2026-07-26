@@ -13,7 +13,8 @@ setup:
 	$(BREW) install cmake taglib python
 	@echo ""
 	@echo "=== Creating Python virtual environment ==="
-	/opt/homebrew/bin/python3 -m venv $(VENV) --clear --upgrade-deps
+	python3 -m venv $(VENV) --clear --upgrade-deps
+	$(PYTHON) -m pip install wxpython
 	@echo ""
 	@echo "=== Setup complete ==="
 	@echo "Run 'make run' to start the GUI."
