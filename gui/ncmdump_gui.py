@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """NCM Dump GUI - cross-platform tkinter frontend for ncmdump."""
+from __future__ import annotations
 
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox
 import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 
 
 class NcmDumpGUI:
