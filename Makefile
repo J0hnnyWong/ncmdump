@@ -18,7 +18,7 @@ run: build
 	@echo "Running ncmdump..."
 	./$(BUILD_DIR)/ncmdump $(ARGS)
 
-gui: build
+gui:
 	@echo "Starting GUI..."
 	python3 gui/ncmdump_gui.py
 
